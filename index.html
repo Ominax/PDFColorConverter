@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Color Inverter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+	<script src="script.js"></script>
+	<link rel="stylesheet" href="style.css">
+   </head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 PDF Color Inverter</h1>
+            <p>Transform your PDFs with high-quality color inversion - perfect for dark mode reading</p>
+        </div>
+
+        <div class="main-content">
+            <div class="upload-area" id="uploadArea">
+                <div class="upload-icon">📄</div>
+                <div class="upload-text">Drop your PDF here or click to select</div>
+                <div class="upload-subtext">Supports PDF files up to 50MB</div>
+            </div>
+
+            <input type="file" id="fileInput" accept=".pdf" />
+
+            <div class="controls hidden" id="controls">
+                <button class="btn btn-secondary" id="toggleInvert">
+                    <span id="invertText">🌙 Invert Colors</span>
+                </button>
+                <button class="btn btn-primary" id="downloadBtn">
+                    <span>💾 Download Inverted PDF</span>
+                </button>
+                <select id="qualitySelect" class="btn btn-secondary">
+                    <option value="2">High Quality (2x)</option>
+                    <option value="1.5" selected>Standard (1.5x)</option>
+                    <option value="1">Fast (1x)</option>
+                </select>
+            </div>
+
+            <div class="progress-bar hidden" id="progressBar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+
+            <div id="status"></div>
+
+            <div class="preview-container hidden" id="previewContainer">
+                <div id="pdfViewer"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configure PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        
+        // Initialize jsPDF
+        const { jsPDF } = window.jspdf;
+
+        class PDFColorInverter {
+            constructor() {
+                this.pdfDoc = null;
+                this.currentFile = null;
+                this.isInverted = false;
+                this.renderedPages = [];
+                this.scale = 1.5;
+                
+                this.initializeElements();
+                this.bindEvents();
+            }
+
+            initializeElements() {
+                this.uploadArea = document.getElementById('uploadArea');
+                this.fileInput = document.getElementById('fileInput');
+                this.controls = document.getElementById('controls');
+                this.toggleBtn = document.getElementById('toggleInvert');
+                this.downloadBtn = document.getElementById('downloadBtn');
+                this.qualitySelect = document.getElementById('qualitySelect');
+                this.progressBar = document.getElementById('progressBar');
+                this.progressFill = document.getElementById('progressFill');
+                this.status = document.getElementById('status');
+                this.previewContainer = document.getElementById('previewContainer');
+                this.pdfViewer = document.getElementById('pdfViewer');
+                this.invertText = document.getElementById('invertText');
+            }
+
+            bindEvents() {
+                // File upload events
+                this.uploadArea.addEventListener('click', () => this.fileInput.click());
+                this.fileInput.addEventListener('change', (e) => this.handleFileSelect(e));
+                
+                // Drag and drop events
+                this.uploadArea.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    this.uploadArea.classList.add('dragover');
+                });
+                
+                this.uploadArea.addEventListener('dragleave', () => {
+                    this.uploadArea.classList.remove('dragover');
+                });
+                
+                this.uploadArea.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    this.uploadArea.classList.remove('dragover');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) this.loadPDF(files[0]);
+                });
+
+                // Control events
+                this.toggleBtn.addEventListener('click', () => this.toggleInversion());
+                this.downloadBtn.addEventListener('click', () => this.downloadInvertedPDF());
+                this.qualitySelect.addEventListener('change', (e) => {
+                    this.scale = parseFloat(e.target.value);
+                    if (this.pdfDoc) this.renderAllPages();
+                });
+            }
+
+            handleFileSelect(event) {
+                const file = event.target.files[0];
+                if (file) this.loadPDF(file);
+            }
+
+            async loadPDF(file) {
+                if (file.type !== 'application/pdf') {
+                    this.showStatus('Please select a valid PDF file.', 'error');
+                    return;
+                }
+
+                if (file.size > 50 * 1024 * 1024) {
+                    this.showStatus('File size must be less than 50MB.', 'error');
+                    return;
+                }
+
+                this.currentFile = file;
+                this.showStatus('Loading PDF...', 'info');
+                this.showProgress(0);
+
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    this.pdfDoc = await pdfjsLib.getDocument(arrayBuffer).promise;
+                    
+                    this.showStatus(`PDF loaded successfully! ${this.pdfDoc.numPages} pages found.`, 'success');
+                    this.controls.classList.remove('hidden');
+                    this.previewContainer.classList.remove('hidden');
+                    
+                    await this.renderAllPages();
+                    this.hideProgress();
+                    
+                } catch (error) {
+                    console.error('Error loading PDF:', error);
+                    this.showStatus('Error loading PDF. Please try another file.', 'error');
+                    this.hideProgress();
+                }
+            }
+
+            async renderAllPages() {
+                if (!this.pdfDoc) return;
+
+                this.pdfViewer.innerHTML = '';
+                this.renderedPages = [];
+                
+                const totalPages = this.pdfDoc.numPages;
+                
+                for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+                    this.showProgress((pageNum - 1) / totalPages * 100);
+                    
+                    try {
+                        const page = await this.pdfDoc.getPage(pageNum);
+                        const canvas = await this.renderPage(page, pageNum);
+                        this.renderedPages.push(canvas);
+                        
+                        // Add page to viewer
+                        const pageContainer = document.createElement('div');
+                        pageContainer.className = 'page-container';
+                        
+                        const canvasClone = canvas.cloneNode();
+                        const ctx = canvasClone.getContext('2d');
+                        ctx.drawImage(canvas, 0, 0);
+                        
+                        canvasClone.className = 'page-canvas';
+                        if (this.isInverted) canvasClone.classList.add('inverted');
+                        
+                        const pageNumber = document.createElement('div');
+                        pageNumber.className = 'page-number';
+                        pageNumber.textContent = `Page ${pageNum} of ${totalPages}`;
+                        
+                        pageContainer.appendChild(canvasClone);
+                        pageContainer.appendChild(pageNumber);
+                        this.pdfViewer.appendChild(pageContainer);
+                        
+                    } catch (error) {
+                        console.error(`Error rendering page ${pageNum}:`, error);
+                    }
+                }
+                
+                this.hideProgress();
+            }
+
+            async renderPage(page, pageNum) {
+                const viewport = page.getViewport({ scale: this.scale });
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                
+                await page.render(renderContext).promise;
+                return canvas;
+            }
+
+            toggleInversion() {
+                this.isInverted = !this.isInverted;
+                
+                const canvases = document.querySelectorAll('.page-canvas');
+                canvases.forEach(canvas => {
+                    canvas.classList.toggle('inverted');
+                });
+                
+                this.invertText.textContent = this.isInverted ? '☀️ Normal Colors' : '🌙 Invert Colors';
+                this.previewContainer.classList.toggle('dark-preview', this.isInverted);
+            }
+
+            async downloadInvertedPDF() {
+                if (!this.pdfDoc || this.renderedPages.length === 0) {
+                    this.showStatus('No PDF loaded to download.', 'error');
+                    return;
+                }
+
+                this.showStatus('Generating inverted PDF...', 'info');
+                this.showProgress(0);
+
+                try {
+                    // Create a new PDF using jsPDF would require additional library
+                    // For now, we'll create a canvas-based approach
+                    await this.generateInvertedPDF();
+                    
+                } catch (error) {
+                    console.error('Error generating PDF:', error);
+                    this.showStatus('Error generating inverted PDF.', 'error');
+                }
+                
+                this.hideProgress();
+            }
+
+            async generateInvertedPDF() {
+                this.showStatus('Creating inverted PDF...', 'info');
+                
+                if (this.renderedPages.length === 0) {
+                    this.showStatus('No pages to process.', 'error');
+                    return;
+                }
+
+                try {
+                    // Get dimensions from first page to determine PDF format
+                    const firstPage = this.renderedPages[0];
+                    const pageWidth = firstPage.width;
+                    const pageHeight = firstPage.height;
+                    
+                    // Determine orientation and size
+                    const isLandscape = pageWidth > pageHeight;
+                    const pdfWidth = isLandscape ? Math.max(pageWidth, pageHeight) : Math.min(pageWidth, pageHeight);
+                    const pdfHeight = isLandscape ? Math.min(pageWidth, pageHeight) : Math.max(pageWidth, pageHeight);
+                    
+                    // Create PDF with appropriate dimensions (convert pixels to mm, assuming 96 DPI)
+                    const mmWidth = (pdfWidth * 25.4) / 96;
+                    const mmHeight = (pdfHeight * 25.4) / 96;
+                    
+                    const pdf = new jsPDF({
+                        orientation: isLandscape ? 'landscape' : 'portrait',
+                        unit: 'mm',
+                        format: [mmWidth, mmHeight]
+                    });
+
+                    // Process each page
+                    for (let i = 0; i < this.renderedPages.length; i++) {
+                        this.showProgress((i / this.renderedPages.length) * 90); // Reserve 10% for final steps
+                        
+                        const canvas = this.renderedPages[i];
+                        const invertedCanvas = this.invertCanvas(canvas);
+                        
+                        // Convert canvas to image data
+                        const imgData = invertedCanvas.toDataURL('image/png', 1.0);
+                        
+                        // Add new page if not the first page
+                        if (i > 0) {
+                            pdf.addPage([mmWidth, mmHeight], isLandscape ? 'landscape' : 'portrait');
+                        }
+                        
+                        // Add image to PDF, fitting to page size
+                        pdf.addImage(imgData, 'PNG', 0, 0, mmWidth, mmHeight, '', 'FAST');
+                        
+                        // Small delay to prevent UI blocking
+                        if (i % 5 === 0) {
+                            await new Promise(resolve => setTimeout(resolve, 10));
+                        }
+                    }
+
+                    this.showProgress(95);
+                    
+                    // Generate filename
+                    const originalName = this.currentFile.name.replace('.pdf', '');
+                    const filename = `${originalName}_inverted.pdf`;
+                    
+                    // Save the PDF
+                    pdf.save(filename);
+                    
+                    this.showProgress(100);
+                    this.showStatus(`✅ Inverted PDF "${filename}" downloaded successfully!`, 'success');
+                    
+                } catch (error) {
+                    console.error('Error generating PDF:', error);
+                    this.showStatus('❌ Error generating inverted PDF. Please try again.', 'error');
+                }
+            }
+
+            invertCanvas(originalCanvas) {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                
+                canvas.width = originalCanvas.width;
+                canvas.height = originalCanvas.height;
+                
+                // Draw original image
+                ctx.drawImage(originalCanvas, 0, 0);
+                
+                // Get image data and invert colors
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                
+                // Invert each pixel
+                for (let i = 0; i < data.length; i += 4) {
+                    data[i] = 255 - data[i];         // Red
+                    data[i + 1] = 255 - data[i + 1]; // Green
+                    data[i + 2] = 255 - data[i + 2]; // Blue
+                    // Alpha channel (data[i + 3]) remains unchanged
+                }
+                
+                // Put inverted image data back
+                ctx.putImageData(imageData, 0, 0);
+                
+                return canvas;
+            }
+
+            showStatus(message, type) {
+                this.status.innerHTML = `<div class="status ${type}">${message}</div>`;
+            }
+
+            showProgress(percentage) {
+                this.progressBar.classList.remove('hidden');
+                this.progressFill.style.width = `${percentage}%`;
+            }
+
+            hideProgress() {
+                this.progressBar.classList.add('hidden');
+                this.progressFill.style.width = '0%';
+            }
+        }
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            new PDFColorInverter();
+        });
+    </script>
+</body>
+</html>
